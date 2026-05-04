@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>WorkTimeTracker.Admin</RootNamespace>
+    <AssemblyName>WorkTimeTracker.Admin</AssemblyName>
+    <UserSecretsId>worktime-tracker-admin</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WorkTimeTracker.Shared\WorkTimeTracker.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

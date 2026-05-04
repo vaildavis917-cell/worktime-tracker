@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>WorkTimeTracker.Shared</RootNamespace>
+    <AssemblyName>WorkTimeTracker.Shared</AssemblyName>
+  </PropertyGroup>
+
+</Project>
