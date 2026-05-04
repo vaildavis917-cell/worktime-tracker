@@ -12,6 +12,11 @@ builder.Services.AddSingleton<IScreenshotService, ScreenshotService>();
 builder.Services.AddSingleton<IProcessMonitor, ProcessMonitor>();
 builder.Services.AddSingleton<IEventQueue, EventQueue>();
 
+if (OperatingSystem.IsWindows())
+{
+    builder.Services.AddHostedService<TrayNotificationService>();
+}
+
 builder.Services.AddHttpClient<IEventUploader, EventUploader>((sp, http) =>
 {
     var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentOptions>>().Value;
