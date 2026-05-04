@@ -12,6 +12,9 @@ public class ServerHost
     public DateTime? LastHeartbeatAt { get; set; }
     public string? AgentVersion { get; set; }
     public string? OsVersion { get; set; }
+    public int? CurrentSessionId { get; set; }
+    public string? CurrentSamAccountName { get; set; }
+    public DateTime? LiveViewUntil { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; }
 }

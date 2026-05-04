@@ -53,12 +53,23 @@ public class AgentsController : ControllerBase
     {
         // TODO (stage 4): validate X-Agent-Token against ServerHosts.AgentToken
         var host = await UpsertHost(dto.Hostname, dto.AgentVersion, ct);
+        host.CurrentSessionId = dto.CurrentSessionId;
+        host.CurrentSamAccountName = dto.CurrentSamAccountName;
+        host.OsVersion = dto.OsVersion;
         await _db.SaveChangesAsync(ct);
 
-        _logger.LogDebug("Heartbeat from {Host} v{Ver} (sessions={Active})",
-            dto.Hostname, dto.AgentVersion, dto.ActiveSessions);
+        // Live-view: when an admin clicked "Watch" on the station within the
+        // last LiveViewUntil window, ask the agent to ship screenshots more
+        // often. The agent clamps to [1s, 10min].
+        var liveActive = host.LiveViewUntil is { } expiry && expiry > DateTime.UtcNow;
+        var interval = liveActive ? 2 : 30;
 
-        return Ok(new AgentHeartbeatResponse(host.Id, RequestFullSync: false));
+        _logger.LogDebug(
+            "Heartbeat from {Host} v{Ver} session={Sid} sam={Sam} live={Live} interval={Interval}s",
+            dto.Hostname, dto.AgentVersion, dto.CurrentSessionId, dto.CurrentSamAccountName,
+            liveActive, interval);
+
+        return Ok(new AgentHeartbeatResponse(host.Id, RequestFullSync: false, ScreenshotIntervalSeconds: interval));
     }
 
     [HttpPost("events")]

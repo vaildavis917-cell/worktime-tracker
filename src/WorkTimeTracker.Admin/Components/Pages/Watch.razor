@@ -1,0 +1,126 @@
+@page "/watch/{Hostname}"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Live-view: @Hostname</PageTitle>
+
+<h1>Live-view: @Hostname</h1>
+
+<div class="callout">
+    <strong>Live-view активен.</strong> Агент шлёт скриншоты раз в 2 секунды до @(liveUntil?.ToLocalTime().ToString("HH:mm:ss") ?? "—") (10 минут от активации).
+    <button class="btn-link" @onclick="StopLiveView">Остановить</button>
+</div>
+
+<p class="muted">
+    Текущий сеанс: <strong>@(currentUser ?? "—")</strong>
+    @if (currentSessionId is not null)
+    {
+        <span> (WTS session id @currentSessionId)</span>
+    }
+    @if (lastUpdate is not null)
+    {
+        <span> · последний кадр @FormatAgo(lastUpdate.Value)</span>
+    }
+</p>
+
+@if (latestScreenshotId is not null)
+{
+    <img class="watch-screenshot" src="/admin-api/screenshots/@latestScreenshotId?t=@cacheBuster" alt="live screenshot" />
+}
+else
+{
+    <p>Ожидание первого скриншота от агента...</p>
+}
+
+<h2 class="mt-3">RDP shadow</h2>
+<p>Запустите на админ-машине (нужны права из GPO "Set rules for remote control of Remote Desktop Services user sessions"):</p>
+<pre class="shadow-cmd">@shadowCommand</pre>
+
+@code {
+    [Parameter] public string Hostname { get; set; } = string.Empty;
+
+    private Guid? latestScreenshotId;
+    private DateTime? lastUpdate;
+    private int? currentSessionId;
+    private string? currentUser;
+    private DateTime? liveUntil;
+    private string shadowCommand = string.Empty;
+    private long cacheBuster = 0;
+    private System.Threading.Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await EnableLiveViewAsync();
+        await RefreshAsync();
+        _timer = new System.Threading.Timer(async _ => await InvokeAsync(RefreshAsync),
+            null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+    }
+
+    private async Task EnableLiveViewAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var host = await db.ServerHosts.FirstOrDefaultAsync(h => h.Hostname == Hostname);
+        if (host is null) return;
+        host.LiveViewUntil = DateTime.UtcNow.AddMinutes(10);
+        await db.SaveChangesAsync();
+        liveUntil = host.LiveViewUntil;
+    }
+
+    private async Task RefreshAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var host = await db.ServerHosts.AsNoTracking().FirstOrDefaultAsync(h => h.Hostname == Hostname);
+        if (host is null) return;
+
+        currentSessionId = host.CurrentSessionId;
+        currentUser = host.CurrentSamAccountName;
+        liveUntil = host.LiveViewUntil;
+        shadowCommand = $"mstsc /shadow:{host.CurrentSessionId ?? 1} /v:{host.Hostname} /control /noconsentprompt";
+
+        var shot = await db.Screenshots
+            .AsNoTracking()
+            .Where(s => s.RdpSession!.ServerHostId == host.Id)
+            .OrderByDescending(s => s.CapturedAt)
+            .Select(s => new { s.Id, s.CapturedAt })
+            .FirstOrDefaultAsync();
+
+        if (shot is not null && shot.Id != latestScreenshotId)
+        {
+            latestScreenshotId = shot.Id;
+            lastUpdate = shot.CapturedAt;
+            cacheBuster = DateTime.UtcNow.Ticks;
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task StopLiveView()
+    {
+        _timer?.Dispose();
+        _timer = null;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var host = await db.ServerHosts.FirstOrDefaultAsync(h => h.Hostname == Hostname);
+        if (host is not null)
+        {
+            host.LiveViewUntil = null;
+            await db.SaveChangesAsync();
+        }
+        Nav.NavigateTo("/stations");
+    }
+
+    private static string FormatAgo(DateTime at)
+    {
+        var ago = DateTime.UtcNow - at;
+        if (ago.TotalSeconds < 5) return "только что";
+        if (ago.TotalSeconds < 60) return $"{(int)ago.TotalSeconds} с назад";
+        return at.ToLocalTime().ToString("HH:mm:ss");
+    }
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+    }
+}

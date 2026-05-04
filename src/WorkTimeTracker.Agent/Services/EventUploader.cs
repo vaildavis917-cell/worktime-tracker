@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using Microsoft.Extensions.Logging;
 using WorkTimeTracker.Shared.Dtos;
@@ -8,11 +9,13 @@ public class EventUploader : IEventUploader
 {
     private readonly HttpClient _http;
     private readonly ILogger<EventUploader> _logger;
+    private readonly AgentRuntime _runtime;
 
-    public EventUploader(HttpClient http, ILogger<EventUploader> logger)
+    public EventUploader(HttpClient http, ILogger<EventUploader> logger, AgentRuntime runtime)
     {
         _http = http;
         _logger = logger;
+        _runtime = runtime;
     }
 
     public async Task SendHeartbeatAsync(CancellationToken ct)
@@ -21,10 +24,27 @@ public class EventUploader : IEventUploader
             Hostname: Environment.MachineName,
             AgentVersion: typeof(EventUploader).Assembly.GetName().Version?.ToString() ?? "0.0.0",
             SentAtUtc: DateTime.UtcNow,
-            ActiveSessions: 0); // TODO: real session count
+            ActiveSessions: 1,
+            CurrentSessionId: Process.GetCurrentProcess().SessionId,
+            CurrentSamAccountName: Environment.UserName,
+            OsVersion: Environment.OSVersion.VersionString);
 
         var resp = await _http.PostAsJsonAsync("api/agents/heartbeat", dto, ct);
         resp.EnsureSuccessStatusCode();
+
+        var body = await resp.Content.ReadFromJsonAsync<AgentHeartbeatResponse>(cancellationToken: ct);
+        if (body is not null && body.ScreenshotIntervalSeconds > 0)
+        {
+            var newInterval = TimeSpan.FromSeconds(body.ScreenshotIntervalSeconds);
+            if (newInterval != _runtime.ScreenshotInterval)
+            {
+                _logger.LogInformation(
+                    "Server requested screenshot interval change: {Old}s -> {New}s",
+                    (int)_runtime.ScreenshotInterval.TotalSeconds,
+                    (int)newInterval.TotalSeconds);
+                _runtime.SetScreenshotInterval(newInterval);
+            }
+        }
     }
 
     public async Task SendEventBatchAsync(ActivityEventBatchDto batch, CancellationToken ct)

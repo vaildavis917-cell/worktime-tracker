@@ -20,47 +20,70 @@ else
         <thead>
             <tr>
                 <th>Hostname</th>
+                <th>Текущий пользователь</th>
+                <th>WTS session</th>
                 <th>OS</th>
                 <th>Версия агента</th>
-                <th>Последний heartbeat</th>
-                <th>Активных сессий</th>
+                <th>Heartbeat</th>
+                <th>Live</th>
                 <th>Действия</th>
             </tr>
         </thead>
         <tbody>
             @foreach (var r in rows)
             {
+                var liveActive = r.LiveViewUntil is { } u && u > DateTime.UtcNow;
                 <tr>
-                    <td>@r.Hostname</td>
+                    <td><strong>@r.Hostname</strong></td>
+                    <td>@(r.CurrentSamAccountName ?? "—")</td>
+                    <td>@(r.CurrentSessionId?.ToString() ?? "—")</td>
                     <td>@(r.OsVersion ?? "—")</td>
                     <td>@(r.AgentVersion ?? "—")</td>
                     <td>@FormatHeartbeat(r.LastHeartbeatAt)</td>
-                    <td>@r.ActiveSessions</td>
                     <td>
-                        <button class="btn-link" @onclick="() => CopyShadowCommand(r.Hostname)">
-                            Команда RDP shadow
-                        </button>
+                        @if (liveActive)
+                        {
+                            <span class="badge-live">live до @(r.LiveViewUntil!.Value.ToLocalTime().ToString("HH:mm"))</span>
+                        }
+                        else
+                        {
+                            <span class="muted">—</span>
+                        }
+                    </td>
+                    <td class="actions">
+                        <a class="btn-link" href="/watch/@r.Hostname">Watch</a>
+                        <button class="btn-link" @onclick="() => ShowShadow(r)">RDP shadow</button>
                     </td>
                 </tr>
             }
         </tbody>
     </table>
 
-    @if (!string.IsNullOrEmpty(shadowCommand))
+    @if (selectedShadow is not null)
     {
         <div class="callout">
-            <strong>Скопируйте и выполните на админ-машине:</strong>
-            <pre>@shadowCommand</pre>
-            <small>Требует, чтобы Group Policy "Set rules for remote control" разрешала Shadow без подтверждения для членов админ-группы.</small>
+            <strong>Команда RDP shadow для @selectedShadow.Hostname (выполнить на админ-машине):</strong>
+            <pre>@selectedShadow.Command</pre>
+            <small>Текущий пользователь на хосте: @(selectedShadow.User ?? "неизвестен"), WTS session id: @selectedShadow.SessionId.<br/>
+            Требует политики "Set rules for remote control of Remote Desktop Services user sessions" → Full Control without user's permission, заданной для админ-группы. Без этой политики Windows запросит разрешение у пользователя.</small>
         </div>
     }
 }
 
 @code {
-    private record Row(string Hostname, string? OsVersion, string? AgentVersion, DateTime? LastHeartbeatAt, int ActiveSessions);
+    private record Row(
+        string Hostname,
+        string? OsVersion,
+        string? AgentVersion,
+        DateTime? LastHeartbeatAt,
+        int? CurrentSessionId,
+        string? CurrentSamAccountName,
+        DateTime? LiveViewUntil);
+
+    private record ShadowInfo(string Hostname, string Command, int SessionId, string? User);
 
     private List<Row>? rows;
-    private string? shadowCommand;
+    private ShadowInfo? selectedShadow;
 
     protected override async Task OnInitializedAsync()
     {
@@ -73,7 +96,9 @@ else
                 h.OsVersion,
                 h.AgentVersion,
                 h.LastHeartbeatAt,
-                db.RdpSessions.Count(s => s.ServerHostId == h.Id && s.EndedAt == null)))
+                h.CurrentSessionId,
+                h.CurrentSamAccountName,
+                h.LiveViewUntil))
             .ToListAsync();
     }
 
@@ -81,16 +106,16 @@ else
     {
         if (at is null) return "никогда";
         var ago = DateTime.UtcNow - at.Value;
-        if (ago.TotalMinutes < 2) return "только что";
+        if (ago.TotalSeconds < 30) return "только что";
         if (ago.TotalMinutes < 60) return $"{(int)ago.TotalMinutes} мин назад";
         if (ago.TotalHours < 24) return $"{(int)ago.TotalHours} ч назад";
         return at.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
     }
 
-    private void CopyShadowCommand(string hostname)
+    private void ShowShadow(Row r)
     {
-        // Stage 6 will resolve the live WTS session ID from the agent. For
-        // now produce a generic /v: command and let admin pick session 0/1.
-        shadowCommand = $"mstsc /shadow:1 /v:{hostname} /control /noconsentprompt";
+        var sid = r.CurrentSessionId ?? 1;
+        var cmd = $"mstsc /shadow:{sid} /v:{r.Hostname} /control /noconsentprompt";
+        selectedShadow = new ShadowInfo(r.Hostname, cmd, sid, r.CurrentSamAccountName);
     }
 }

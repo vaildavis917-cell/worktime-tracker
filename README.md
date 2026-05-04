@@ -34,10 +34,13 @@
 ### События, которые фиксирует агент
 
 - **Сессии:** `SESSION_LOGON`, `SESSION_LOGOFF`, `SESSION_LOCK`, `SESSION_UNLOCK`, `CONSOLE_CONNECT`, `CONSOLE_DISCONNECT`, `REMOTE_CONNECT`, `REMOTE_DISCONNECT` через `WTSRegisterSessionNotification` (Win32 API). Тип сессии (console vs remote) определяется через `WTSQuerySessionInformation(WTSClientProtocolType)`: 0 = console, 2 = RDP.
-- **Foreground-окно:** через `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`. По смене активного окна — пишется заголовок и имя процесса.
-- **Триггеры на скриншот:** запуск Telegram (`Telegram.exe`), любого браузера, переключение на нерабочее ПО (список конфигурируется), плюс периодический раз в N минут.
-- **Браузерные URL:** опционально, через UI Automation у `chrome.exe` / `msedge.exe` / `firefox.exe` — без установки расширений.
-- **Простой:** определяется через `GetLastInputInfo` (нет ввода >N минут — таймер ставится на паузу).
+- **Скриншоты:** все мониторы (объединённый bitmap по `SystemInformation.VirtualScreen`), каждые 30 секунд по умолчанию.
+- **Live-view:** в админке кнопка "Watch" по любой станции — сервер ставит флаг `LiveViewUntil = +10 минут`, агент читает желаемый интервал из ответа на heartbeat и переключается на 2 секунды. Видимый индикатор: иконка в трее остаётся, плюс badge "live" в админке. Без ввода с админ-конца — только просмотр.
+- **RDP shadow:** в админке кнопка "RDP shadow" формирует команду `mstsc /shadow:<sessionId> /v:<hostname> /control` для админ-машины — реальный session id берётся из последнего heartbeat'а. Подключение использует встроенный механизм Windows Remote Desktop Services Session Shadowing, требует политики "Set rules for remote control of Remote Desktop Services user sessions" в GPO. **Никакого собственного канала remote control в агенте нет** (см. "Что не входит в проект").
+- **Foreground-окно:** через `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`. По смене активного окна — пишется заголовок и имя процесса. (TODO)
+- **Триггеры на скриншот по событию:** запуск Telegram (`Telegram.exe`), любого браузера, переключение на нерабочее ПО (список конфигурируется). (TODO)
+- **Браузерные URL:** опционально, через UI Automation у `chrome.exe` / `msedge.exe` / `firefox.exe` — без установки расширений. (TODO)
+- **Простой:** определяется через `GetLastInputInfo` (нет ввода >N минут — таймер ставится на паузу). (TODO)
 
 ---
 
@@ -173,17 +176,18 @@ worktime-tracker/
 
 ## Дорожная карта (MVP → v1)
 
-- [x] Скаффолдинг solution и CI
+- [x] Скаффолдинг solution и CI (этап 0)
 - [x] Agent: захват скриншотов всех мониторов и периодическая загрузка (этап 1)
 - [x] Server: приём multipart-скриншотов и сохранение в БД + ФС (этап 1)
-- [ ] Agent: подписка на WTS-события (P/Invoke на `wtsapi32.dll`), реальные сессии вместо синтетических
+- [x] Agent: WTS-события через P/Invoke (`wtsapi32.dll` + message-only window) (этап 2)
+- [x] Server: persistence событий с lifecycle сессий (открытие/закрытие) (этап 2)
+- [x] Admin: список станций / сотрудников / RDP-сессий + галерея скриншотов с AD-аутентификацией (этап 4)
+- [x] Tray-уведомление "Этот компьютер находится под наблюдением" — compliance (этап 5)
+- [x] PowerShell инсталлятор Scheduled Task + Intune (этап 5)
+- [x] Live-view (ускоренные скриншоты до 2 сек по запросу из админки) + интеграция с RDP shadow (этап 6)
 - [ ] Agent: триггеры на скриншот по запуску процессов и смене foreground-окна
 - [ ] Server: EF Core миграции вместо `EnsureCreated()`, аутентификация агентов по device-токену
-- [ ] Admin: страница списка сотрудников + AD-аутентификация (Negotiate/Kerberos)
-- [ ] Admin: таймлайн RDP-сессий и галерея скриншотов
 - [ ] Отчёты по часам в Excel/CSV
-- [ ] Уведомление пользователю при входе ("Этот компьютер находится под наблюдением") — compliance
-- [ ] Инсталлятор (PowerShell + .intunewin / chocolatey)
 - [ ] Интеграционные тесты на тестовом домене
 
 ## Что **не** входит в проект

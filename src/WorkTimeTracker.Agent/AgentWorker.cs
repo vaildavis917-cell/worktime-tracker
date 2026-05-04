@@ -12,6 +12,7 @@ public class AgentWorker : BackgroundService
 {
     private readonly ILogger<AgentWorker> _logger;
     private readonly AgentOptions _options;
+    private readonly AgentRuntime _runtime;
     private readonly IRdpSessionMonitor _rdpMonitor;
     private readonly IScreenshotService _screenshots;
     private readonly IProcessMonitor _processMonitor;
@@ -21,6 +22,7 @@ public class AgentWorker : BackgroundService
     public AgentWorker(
         ILogger<AgentWorker> logger,
         IOptions<AgentOptions> options,
+        AgentRuntime runtime,
         IRdpSessionMonitor rdpMonitor,
         IScreenshotService screenshots,
         IProcessMonitor processMonitor,
@@ -29,6 +31,7 @@ public class AgentWorker : BackgroundService
     {
         _logger = logger;
         _options = options.Value;
+        _runtime = runtime;
         _rdpMonitor = rdpMonitor;
         _screenshots = screenshots;
         _processMonitor = processMonitor;
@@ -134,7 +137,7 @@ public class AgentWorker : BackgroundService
 
         while (!ct.IsCancellationRequested)
         {
-            try { await Task.Delay(_options.PeriodicScreenshotInterval, ct); }
+            try { await Task.Delay(_runtime.ScreenshotInterval, ct); }
             catch (OperationCanceledException) { return; }
 
             try

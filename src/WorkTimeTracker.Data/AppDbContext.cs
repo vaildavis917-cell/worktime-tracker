@@ -30,6 +30,7 @@ public class AppDbContext : DbContext
             e.Property(x => x.Hostname).HasMaxLength(256);
             e.Property(x => x.AgentToken).HasMaxLength(128);
             e.Property(x => x.OsVersion).HasMaxLength(128);
+            e.Property(x => x.CurrentSamAccountName).HasMaxLength(256);
         });
 
         b.Entity<RdpSession>(e =>

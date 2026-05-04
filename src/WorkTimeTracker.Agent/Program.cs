@@ -7,6 +7,12 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection("Agent"));
 
+builder.Services.AddSingleton<AgentRuntime>(sp =>
+{
+    var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentOptions>>().Value;
+    return new AgentRuntime(opts.PeriodicScreenshotInterval);
+});
+
 builder.Services.AddSingleton<IRdpSessionMonitor, RdpSessionMonitor>();
 builder.Services.AddSingleton<IScreenshotService, ScreenshotService>();
 builder.Services.AddSingleton<IProcessMonitor, ProcessMonitor>();
