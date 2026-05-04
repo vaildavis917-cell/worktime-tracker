@@ -1,0 +1,100 @@
+@page "/sessions"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>RDP-сессии</PageTitle>
+
+<h1>RDP-сессии</h1>
+
+<div class="filter-bar">
+    <label>За последние:
+        <select @bind="hours" @bind:after="LoadAsync">
+            <option value="6">6 часов</option>
+            <option value="24">сутки</option>
+            <option value="168">неделю</option>
+            <option value="720">месяц</option>
+        </select>
+    </label>
+</div>
+
+@if (rows is null)
+{
+    <p><em>Загрузка...</em></p>
+}
+else if (rows.Count == 0)
+{
+    <p>За выбранный период сессий не найдено.</p>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Сотрудник</th>
+                <th>Станция</th>
+                <th>Тип</th>
+                <th>Начало</th>
+                <th>Конец</th>
+                <th>Длительность</th>
+                <th>Состояние</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in rows)
+            {
+                <tr>
+                    <td>@r.EmployeeSam</td>
+                    <td>@r.Hostname</td>
+                    <td>@r.ClientName</td>
+                    <td>@r.StartedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</td>
+                    <td>@(r.EndedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? "—")</td>
+                    <td>@FormatDuration(r.StartedAt, r.EndedAt)</td>
+                    <td>@(r.EndedAt is null ? "активна" : r.State.ToString())</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private record Row(
+        string EmployeeSam,
+        string Hostname,
+        string ClientName,
+        DateTime StartedAt,
+        DateTime? EndedAt,
+        RdpSessionState State);
+
+    private int hours = 24;
+    private List<Row>? rows;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        rows = null;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var since = DateTime.UtcNow.AddHours(-hours);
+
+        rows = await db.RdpSessions
+            .Where(s => s.StartedAt >= since)
+            .OrderByDescending(s => s.StartedAt)
+            .Select(s => new Row(
+                s.Employee!.SamAccountName,
+                s.ServerHost!.Hostname,
+                s.ClientName,
+                s.StartedAt,
+                s.EndedAt,
+                s.State))
+            .Take(500)
+            .ToListAsync();
+    }
+
+    private static string FormatDuration(DateTime start, DateTime? end)
+    {
+        var d = (end ?? DateTime.UtcNow) - start;
+        if (d.TotalHours >= 1) return $"{(int)d.TotalHours}ч {d.Minutes}м";
+        if (d.TotalMinutes >= 1) return $"{(int)d.TotalMinutes}м";
+        return $"{(int)d.TotalSeconds}с";
+    }
+}

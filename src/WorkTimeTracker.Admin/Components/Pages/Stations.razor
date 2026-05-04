@@ -1,0 +1,96 @@
+@page "/stations"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Станции</PageTitle>
+
+<h1>Станции</h1>
+
+@if (rows is null)
+{
+    <p><em>Загрузка...</em></p>
+}
+else if (rows.Count == 0)
+{
+    <p>Станций пока нет. Запустите агент на одной из машин — она появится при первом heartbeat'е.</p>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Hostname</th>
+                <th>OS</th>
+                <th>Версия агента</th>
+                <th>Последний heartbeat</th>
+                <th>Активных сессий</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in rows)
+            {
+                <tr>
+                    <td>@r.Hostname</td>
+                    <td>@(r.OsVersion ?? "—")</td>
+                    <td>@(r.AgentVersion ?? "—")</td>
+                    <td>@FormatHeartbeat(r.LastHeartbeatAt)</td>
+                    <td>@r.ActiveSessions</td>
+                    <td>
+                        <button class="btn-link" @onclick="() => CopyShadowCommand(r.Hostname)">
+                            Команда RDP shadow
+                        </button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    @if (!string.IsNullOrEmpty(shadowCommand))
+    {
+        <div class="callout">
+            <strong>Скопируйте и выполните на админ-машине:</strong>
+            <pre>@shadowCommand</pre>
+            <small>Требует, чтобы Group Policy "Set rules for remote control" разрешала Shadow без подтверждения для членов админ-группы.</small>
+        </div>
+    }
+}
+
+@code {
+    private record Row(string Hostname, string? OsVersion, string? AgentVersion, DateTime? LastHeartbeatAt, int ActiveSessions);
+
+    private List<Row>? rows;
+    private string? shadowCommand;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        rows = await db.ServerHosts
+            .OrderByDescending(h => h.LastHeartbeatAt)
+            .Select(h => new Row(
+                h.Hostname,
+                h.OsVersion,
+                h.AgentVersion,
+                h.LastHeartbeatAt,
+                db.RdpSessions.Count(s => s.ServerHostId == h.Id && s.EndedAt == null)))
+            .ToListAsync();
+    }
+
+    private static string FormatHeartbeat(DateTime? at)
+    {
+        if (at is null) return "никогда";
+        var ago = DateTime.UtcNow - at.Value;
+        if (ago.TotalMinutes < 2) return "только что";
+        if (ago.TotalMinutes < 60) return $"{(int)ago.TotalMinutes} мин назад";
+        if (ago.TotalHours < 24) return $"{(int)ago.TotalHours} ч назад";
+        return at.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+    }
+
+    private void CopyShadowCommand(string hostname)
+    {
+        // Stage 6 will resolve the live WTS session ID from the agent. For
+        // now produce a generic /v: command and let admin pick session 0/1.
+        shadowCommand = $"mstsc /shadow:1 /v:{hostname} /control /noconsentprompt";
+    }
+}

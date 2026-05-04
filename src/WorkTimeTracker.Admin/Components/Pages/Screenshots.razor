@@ -1,0 +1,113 @@
+@page "/screenshots"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Скриншоты</PageTitle>
+
+<h1>Скриншоты</h1>
+
+<div class="filter-bar">
+    <label>Сотрудник:
+        <select @bind="filterSam" @bind:after="LoadAsync">
+            <option value="">— все —</option>
+            @foreach (var emp in employees)
+            {
+                <option value="@emp">@emp</option>
+            }
+        </select>
+    </label>
+    <label>Дата:
+        <input type="date" @bind="filterDate" @bind:after="LoadAsync" />
+    </label>
+</div>
+
+@if (rows is null)
+{
+    <p><em>Загрузка...</em></p>
+}
+else if (rows.Count == 0)
+{
+    <p>За выбранный фильтр скриншотов не найдено.</p>
+}
+else
+{
+    <p class="muted">Найдено @rows.Count скриншот(ов). Кликните по миниатюре для увеличения.</p>
+    <div class="screenshot-grid">
+        @foreach (var r in rows)
+        {
+            <a class="screenshot-tile" href="/admin-api/screenshots/@r.Id" target="_blank">
+                <img src="/admin-api/screenshots/@r.Id" alt="screenshot" loading="lazy" />
+                <div class="screenshot-meta">
+                    <div>@r.EmployeeSam &mdash; @r.Hostname</div>
+                    <div>@r.CapturedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</div>
+                    <div class="muted">@r.Width&times;@r.Height &middot; @FormatBytes(r.SizeBytes) &middot; @r.Trigger</div>
+                </div>
+            </a>
+        }
+    </div>
+}
+
+@code {
+    private record Row(
+        Guid Id,
+        DateTime CapturedAt,
+        string EmployeeSam,
+        string Hostname,
+        int Width,
+        int Height,
+        long SizeBytes,
+        ScreenshotTrigger Trigger);
+
+    private string filterSam = string.Empty;
+    private DateTime filterDate = DateTime.UtcNow.Date;
+    private List<string> employees = new();
+    private List<Row>? rows;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        employees = await db.Employees
+            .OrderBy(e => e.SamAccountName)
+            .Select(e => e.SamAccountName)
+            .ToListAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        rows = null;
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var dayStart = DateTime.SpecifyKind(filterDate, DateTimeKind.Utc);
+        var dayEnd = dayStart.AddDays(1);
+
+        var q = db.Screenshots
+            .Where(s => s.CapturedAt >= dayStart && s.CapturedAt < dayEnd);
+
+        if (!string.IsNullOrEmpty(filterSam))
+        {
+            q = q.Where(s => s.RdpSession!.Employee!.SamAccountName == filterSam);
+        }
+
+        rows = await q
+            .OrderByDescending(s => s.CapturedAt)
+            .Select(s => new Row(
+                s.Id,
+                s.CapturedAt,
+                s.RdpSession!.Employee!.SamAccountName,
+                s.RdpSession.ServerHost!.Hostname,
+                s.Width,
+                s.Height,
+                s.SizeBytes,
+                s.Trigger))
+            .Take(200)
+            .ToListAsync();
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024} KB";
+        return $"{bytes / (1024.0 * 1024):0.0} MB";
+    }
+}

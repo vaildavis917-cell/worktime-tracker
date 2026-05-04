@@ -1,0 +1,79 @@
+@page "/employees"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Сотрудники</PageTitle>
+
+<h1>Сотрудники</h1>
+
+@if (rows is null)
+{
+    <p><em>Загрузка...</em></p>
+}
+else if (rows.Count == 0)
+{
+    <p>Сотрудников пока нет — записи создаются автоматически при первом событии от агента.</p>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>SAM</th>
+                <th>Имя</th>
+                <th>Отдел</th>
+                <th>Сессий всего</th>
+                <th>Активных сейчас</th>
+                <th>Последняя активность</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in rows)
+            {
+                <tr>
+                    <td>@r.Sam</td>
+                    <td>@r.DisplayName</td>
+                    <td>@(r.Department ?? "—")</td>
+                    <td>@r.TotalSessions</td>
+                    <td>@(r.ActiveSessions > 0 ? $"да ({r.ActiveSessions})" : "нет")</td>
+                    <td>@FormatLast(r.LastActivity)</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private record Row(string Sam, string DisplayName, string? Department, int TotalSessions, int ActiveSessions, DateTime? LastActivity);
+
+    private List<Row>? rows;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        rows = await db.Employees
+            .OrderBy(e => e.SamAccountName)
+            .Select(e => new Row(
+                e.SamAccountName,
+                e.DisplayName,
+                e.Department,
+                db.RdpSessions.Count(s => s.EmployeeId == e.Id),
+                db.RdpSessions.Count(s => s.EmployeeId == e.Id && s.EndedAt == null),
+                db.RdpSessions
+                    .Where(s => s.EmployeeId == e.Id)
+                    .OrderByDescending(s => s.StartedAt)
+                    .Select(s => (DateTime?)s.StartedAt)
+                    .FirstOrDefault()))
+            .ToListAsync();
+    }
+
+    private static string FormatLast(DateTime? at)
+    {
+        if (at is null) return "—";
+        var ago = DateTime.UtcNow - at.Value;
+        if (ago.TotalMinutes < 60) return $"{(int)ago.TotalMinutes} мин назад";
+        if (ago.TotalHours < 24) return $"{(int)ago.TotalHours} ч назад";
+        return at.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+    }
+}

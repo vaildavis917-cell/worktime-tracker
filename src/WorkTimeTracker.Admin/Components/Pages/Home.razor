@@ -1,15 +1,62 @@
 @page "/"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
 
 <PageTitle>WorkTimeTracker — Главная</PageTitle>
 
 <h1>WorkTimeTracker</h1>
 
-<p>Учёт рабочего времени и активности сотрудников на рабочих станциях Windows 10 (через консоль или RDP).</p>
+<p>Учёт рабочего времени и активности на рабочих станциях Windows 10.</p>
 
-<p>Разделы будут добавлены по мере реализации:</p>
-<ul>
-    <li><strong>Сотрудники</strong> — каталог, синхронизация с AD</li>
-    <li><strong>RDP-сессии</strong> — таймлайн подключений по серверам</li>
-    <li><strong>Скриншоты</strong> — галерея снимков с фильтрами</li>
-    <li><strong>Отчёты</strong> — часы за период, выгрузка в CSV/Excel</li>
-</ul>
+@if (loaded)
+{
+    <div class="cards">
+        <div class="card">
+            <div class="card-value">@stationCount</div>
+            <div class="card-label">станций</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@employeeCount</div>
+            <div class="card-label">сотрудников</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@activeSessionCount</div>
+            <div class="card-label">активных сессий</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@screenshotCount24h</div>
+            <div class="card-label">скриншотов за 24ч</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@eventsCount24h</div>
+            <div class="card-label">событий за 24ч</div>
+        </div>
+    </div>
+}
+else
+{
+    <p><em>Загрузка...</em></p>
+}
+
+@code {
+    private bool loaded;
+    private int stationCount;
+    private int employeeCount;
+    private int activeSessionCount;
+    private int screenshotCount24h;
+    private int eventsCount24h;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var since = DateTime.UtcNow.AddHours(-24);
+
+        stationCount = await db.ServerHosts.CountAsync();
+        employeeCount = await db.Employees.CountAsync();
+        activeSessionCount = await db.RdpSessions.CountAsync(s => s.EndedAt == null);
+        screenshotCount24h = await db.Screenshots.CountAsync(s => s.CapturedAt >= since);
+        eventsCount24h = await db.ActivityEvents.CountAsync(e => e.Timestamp >= since);
+
+        loaded = true;
+    }
+}

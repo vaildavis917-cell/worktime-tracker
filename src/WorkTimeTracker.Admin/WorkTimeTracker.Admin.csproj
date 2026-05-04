@@ -8,10 +8,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\WorkTimeTracker.Shared\WorkTimeTracker.Shared.csproj" />
+    <ProjectReference Include="..\WorkTimeTracker.Data\WorkTimeTracker.Data.csproj" />
   </ItemGroup>
 
 </Project>

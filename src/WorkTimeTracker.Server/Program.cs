@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using WorkTimeTracker.Data;
 using WorkTimeTracker.Server;
-using WorkTimeTracker.Server.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 

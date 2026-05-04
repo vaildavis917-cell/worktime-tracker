@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using WorkTimeTracker.Shared.Models;
 
-namespace WorkTimeTracker.Server.Data;
+namespace WorkTimeTracker.Data;
 
 public class AppDbContext : DbContext
 {
@@ -29,11 +29,13 @@ public class AppDbContext : DbContext
             e.HasIndex(x => x.Hostname).IsUnique();
             e.Property(x => x.Hostname).HasMaxLength(256);
             e.Property(x => x.AgentToken).HasMaxLength(128);
+            e.Property(x => x.OsVersion).HasMaxLength(128);
         });
 
         b.Entity<RdpSession>(e =>
         {
             e.HasIndex(x => new { x.ServerHostId, x.WtsSessionId, x.StartedAt });
+            e.HasIndex(x => new { x.EmployeeId, x.StartedAt });
             e.HasOne(x => x.Employee).WithMany(x => x.Sessions).HasForeignKey(x => x.EmployeeId);
             e.HasOne(x => x.ServerHost).WithMany().HasForeignKey(x => x.ServerHostId);
             e.Property(x => x.ClientName).HasMaxLength(256);

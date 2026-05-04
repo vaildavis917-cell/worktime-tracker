@@ -2,7 +2,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using WorkTimeTracker.Server.Data;
+using WorkTimeTracker.Data;
 using WorkTimeTracker.Shared.Dtos;
 using WorkTimeTracker.Shared.Models;
 
