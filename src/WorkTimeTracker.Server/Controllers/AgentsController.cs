@@ -17,6 +17,21 @@ public class AgentsController : ControllerBase
         PropertyNameCaseInsensitive = true
     };
 
+    private static readonly HashSet<ActivityEventType> SessionOpenEvents = new()
+    {
+        ActivityEventType.AgentStarted,
+        ActivityEventType.SessionLogon,
+        ActivityEventType.RemoteConnect,
+        ActivityEventType.ConsoleConnect,
+        ActivityEventType.SessionUnlock
+    };
+
+    private static readonly HashSet<ActivityEventType> SessionCloseEvents = new()
+    {
+        ActivityEventType.AgentStopped,
+        ActivityEventType.SessionLogoff
+    };
+
     private readonly AppDbContext _db;
     private readonly StorageOptions _storage;
     private readonly ILogger<AgentsController> _logger;
@@ -47,12 +62,55 @@ public class AgentsController : ControllerBase
     }
 
     [HttpPost("events")]
-    public IActionResult Events([FromBody] ActivityEventBatchDto batch)
+    public async Task<IActionResult> Events([FromBody] ActivityEventBatchDto batch, CancellationToken ct)
     {
-        // TODO (stage 2/4): persist events; for now just acknowledge so the
-        // agent's flush loop can be wired up incrementally.
-        _logger.LogDebug("Events batch from {Host}: {Count}", batch.Hostname, batch.Events.Count);
-        return Accepted();
+        if (batch.Events is null || batch.Events.Count == 0)
+        {
+            return Accepted(new { saved = 0 });
+        }
+
+        var host = await UpsertHost(batch.Hostname, agentVersion: null, ct);
+        await _db.SaveChangesAsync(ct);
+
+        var employeeCache = new Dictionary<string, Employee>();
+        var saved = 0;
+
+        foreach (var dto in batch.Events.OrderBy(e => e.TimestampUtc))
+        {
+            if (!employeeCache.TryGetValue(dto.SamAccountName, out var emp))
+            {
+                emp = await UpsertEmployee(dto.SamAccountName, ct);
+                await _db.SaveChangesAsync(ct);
+                employeeCache[dto.SamAccountName] = emp;
+            }
+
+            var session = await GetOrOpenSession(emp.Id, host.Id, dto, ct);
+
+            if (SessionCloseEvents.Contains(dto.Type))
+            {
+                session.EndedAt = dto.TimestampUtc;
+                session.State = RdpSessionState.Ended;
+            }
+
+            _db.ActivityEvents.Add(new ActivityEvent
+            {
+                Id = Guid.NewGuid(),
+                RdpSessionId = session.Id,
+                Type = dto.Type,
+                Timestamp = dto.TimestampUtc,
+                ProcessName = dto.ProcessName,
+                WindowTitle = dto.WindowTitle,
+                Url = dto.Url,
+                PayloadJson = dto.PayloadJson
+            });
+            saved++;
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation("Persisted {Count} events from {Host}", saved, batch.Hostname);
+
+        return Accepted(new { saved });
     }
 
     [HttpPost("screenshots")]
@@ -172,22 +230,53 @@ public class AgentsController : ControllerBase
         return emp;
     }
 
-    private async Task<RdpSession> ResolveOpenSession(Guid employeeId, Guid hostId, int wtsSessionId, CancellationToken ct)
+    private async Task<RdpSession> GetOrOpenSession(Guid employeeId, Guid hostId, ActivityEventDto dto, CancellationToken ct)
     {
-        var session = await _db.RdpSessions
+        var session = await FindOpenSession(employeeId, hostId, ct);
+
+        var shouldOpenNew = session is null && SessionOpenEvents.Contains(dto.Type);
+
+        if (session is null && !shouldOpenNew)
+        {
+            // Mid-stream event with no open session; open a synthetic one starting at this timestamp.
+            shouldOpenNew = true;
+        }
+
+        if (shouldOpenNew)
+        {
+            session = new RdpSession
+            {
+                Id = Guid.NewGuid(),
+                EmployeeId = employeeId,
+                ServerHostId = hostId,
+                WtsSessionId = dto.WtsSessionId,
+                ClientName = dto.Type == ActivityEventType.RemoteConnect ? "RDP" : "console",
+                StartedAt = dto.TimestampUtc,
+                State = RdpSessionState.Active
+            };
+            _db.RdpSessions.Add(session);
+        }
+
+        return session!;
+    }
+
+    private async Task<RdpSession?> FindOpenSession(Guid employeeId, Guid hostId, CancellationToken ct) =>
+        await _db.RdpSessions
             .Where(s => s.EmployeeId == employeeId
                      && s.ServerHostId == hostId
                      && s.EndedAt == null)
             .OrderByDescending(s => s.StartedAt)
             .FirstOrDefaultAsync(ct);
 
+    private async Task<RdpSession> ResolveOpenSession(Guid employeeId, Guid hostId, int wtsSessionId, CancellationToken ct)
+    {
+        var session = await FindOpenSession(employeeId, hostId, ct);
         if (session is not null)
         {
             return session;
         }
 
-        // Stage 1 placeholder: stage 2 (WTS monitor) will replace this with
-        // real session lifecycle from SESSION_LOGON / REMOTE_CONNECT events.
+        // Screenshot arrived before any session-open event — open a synthetic one.
         session = new RdpSession
         {
             Id = Guid.NewGuid(),

@@ -16,6 +16,7 @@ public class AgentWorker : BackgroundService
     private readonly IScreenshotService _screenshots;
     private readonly IProcessMonitor _processMonitor;
     private readonly IEventUploader _uploader;
+    private readonly IEventQueue _events;
 
     public AgentWorker(
         ILogger<AgentWorker> logger,
@@ -23,7 +24,8 @@ public class AgentWorker : BackgroundService
         IRdpSessionMonitor rdpMonitor,
         IScreenshotService screenshots,
         IProcessMonitor processMonitor,
-        IEventUploader uploader)
+        IEventUploader uploader,
+        IEventQueue events)
     {
         _logger = logger;
         _options = options.Value;
@@ -31,6 +33,7 @@ public class AgentWorker : BackgroundService
         _screenshots = screenshots;
         _processMonitor = processMonitor;
         _uploader = uploader;
+        _events = events;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -46,14 +49,64 @@ public class AgentWorker : BackgroundService
                 "Deploy via Task Scheduler at user logon for Win10 — see README.");
         }
 
+        _rdpMonitor.SessionEvent += OnRdpSessionEvent;
         _rdpMonitor.Start();
         _processMonitor.Start();
+
+        EnqueueAgentEvent(ActivityEventType.AgentStarted);
 
         var heartbeat = RunHeartbeatLoop(stoppingToken);
         var screenshots = RunPeriodicScreenshotLoop(stoppingToken);
         var flush = RunEventFlushLoop(stoppingToken);
 
         await Task.WhenAll(heartbeat, screenshots, flush);
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        EnqueueAgentEvent(ActivityEventType.AgentStopped);
+
+        try
+        {
+            await FlushEventsAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Final flush on stop failed");
+        }
+
+        _rdpMonitor.SessionEvent -= OnRdpSessionEvent;
+        _rdpMonitor.Stop();
+        _processMonitor.Stop();
+        await base.StopAsync(cancellationToken);
+    }
+
+    private void OnRdpSessionEvent(object? sender, RdpSessionEvent evt)
+    {
+        _events.Enqueue(new ActivityEventDto(
+            ClientEventId: Guid.NewGuid(),
+            WtsSessionId: evt.WtsSessionId,
+            SamAccountName: evt.SamAccountName,
+            Type: evt.Type,
+            TimestampUtc: evt.TimestampUtc,
+            ProcessName: null,
+            WindowTitle: null,
+            Url: null,
+            PayloadJson: evt.ClientName is null ? null : $"{{\"client\":\"{evt.ClientName}\"}}"));
+    }
+
+    private void EnqueueAgentEvent(ActivityEventType type)
+    {
+        _events.Enqueue(new ActivityEventDto(
+            ClientEventId: Guid.NewGuid(),
+            WtsSessionId: Process.GetCurrentProcess().SessionId,
+            SamAccountName: Environment.UserName,
+            Type: type,
+            TimestampUtc: DateTime.UtcNow,
+            ProcessName: null,
+            WindowTitle: null,
+            Url: null,
+            PayloadJson: null));
     }
 
     private async Task RunHeartbeatLoop(CancellationToken ct)
@@ -122,15 +175,29 @@ public class AgentWorker : BackgroundService
             try { await Task.Delay(_options.EventBatchInterval, ct); }
             catch (OperationCanceledException) { return; }
 
-            // TODO (stage 3+): drain queued events from RdpMonitor / ProcessMonitor / Keylogger
-            // and POST batch to /api/agents/events.
+            try
+            {
+                await FlushEventsAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Event flush failed");
+            }
         }
     }
 
-    public override async Task StopAsync(CancellationToken cancellationToken)
+    private async Task FlushEventsAsync(CancellationToken ct)
     {
-        _rdpMonitor.Stop();
-        _processMonitor.Stop();
-        await base.StopAsync(cancellationToken);
+        var batch = _events.DrainAll();
+        if (batch.Count == 0)
+        {
+            return;
+        }
+
+        var dto = new ActivityEventBatchDto(
+            Hostname: Environment.MachineName,
+            Events: batch);
+
+        await _uploader.SendEventBatchAsync(dto, ct);
     }
 }

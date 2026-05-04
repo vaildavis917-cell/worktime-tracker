@@ -8,12 +8,16 @@ public enum ActivityEventType
     SessionUnlock,
     RemoteConnect,
     RemoteDisconnect,
+    ConsoleConnect,
+    ConsoleDisconnect,
     ProcessStart,
     ProcessExit,
     ForegroundWindowChanged,
     UrlVisited,
     IdleStart,
-    IdleEnd
+    IdleEnd,
+    AgentStarted,
+    AgentStopped
 }
 
 public class ActivityEvent

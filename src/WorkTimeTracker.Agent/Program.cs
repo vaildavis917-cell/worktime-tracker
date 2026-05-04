@@ -10,6 +10,7 @@ builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection("Agent
 builder.Services.AddSingleton<IRdpSessionMonitor, RdpSessionMonitor>();
 builder.Services.AddSingleton<IScreenshotService, ScreenshotService>();
 builder.Services.AddSingleton<IProcessMonitor, ProcessMonitor>();
+builder.Services.AddSingleton<IEventQueue, EventQueue>();
 
 builder.Services.AddHttpClient<IEventUploader, EventUploader>((sp, http) =>
 {
