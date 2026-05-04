@@ -103,36 +103,52 @@ dotnet publish src/WorkTimeTracker.Agent -c Release -r win-x64 --self-contained 
 
 ### Установка Agent на одну Windows 10 машину (ручная)
 
-Запустить от администратора:
+> ⚠️ **Важно: Task Scheduler, а не Windows Service.** Windows Service запускается в Session 0, у которой нет интерактивного рабочего стола, поэтому скриншоты с неё получаются чёрные. Для Win10 (где одновременно активна одна сессия) правильный путь — Task Scheduler с триггером "при логоне любого пользователя", тогда процесс агента живёт внутри сессии пользователя и видит реальный экран.
+
+Запустить от администратора на целевой машине:
 
 ```powershell
-# скопировать содержимое publish\Agent на целевую машину в C:\WorkTimeTracker\Agent
-sc.exe create WorkTimeTrackerAgent binPath= "C:\WorkTimeTracker\Agent\WorkTimeTracker.Agent.exe" start= auto displayname= "WorkTime Tracker Agent"
-sc.exe description WorkTimeTrackerAgent "Учёт рабочего времени и активности — корпоративный мониторинг"
-sc.exe failure WorkTimeTrackerAgent reset= 86400 actions= restart/60000/restart/60000/restart/60000
-sc.exe start WorkTimeTrackerAgent
+# 1. Скопировать publish\Agent в C:\WorkTimeTracker\Agent и поправить appsettings.json (ServerUrl, AgentToken).
+# 2. Зарегистрировать запланированную задачу:
+$action  = New-ScheduledTaskAction `
+    -Execute "C:\WorkTimeTracker\Agent\WorkTimeTracker.Agent.exe" `
+    -WorkingDirectory "C:\WorkTimeTracker\Agent"
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+$settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit ([TimeSpan]::Zero)
+$principal = New-ScheduledTaskPrincipal -GroupId "BUILTIN\Users" -RunLevel Limited
+
+Register-ScheduledTask -TaskName "WorkTimeTrackerAgent" `
+    -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
+    -Description "Учёт рабочего времени и активности — корпоративный мониторинг"
+
+# Запустить немедленно для текущего пользователя (не дожидаясь следующего логона):
+Start-ScheduledTask -TaskName "WorkTimeTrackerAgent"
 ```
 
-> Перед запуском пропишите в `C:\WorkTimeTracker\Agent\appsettings.json` корректные `ServerUrl` и `AgentToken` (выдаётся через админку при регистрации новой машины).
+> `RunLevel Limited` означает, что агент запускается с правами обычного пользователя — этого достаточно для скриншотов и отслеживания процессов в его собственной сессии. Повышенные права не нужны и не должны выдаваться.
 
 ### Массовое развёртывание на парк рабочих станций
 
-В сценарии с десятками/сотнями Win10 машин выбирайте один из вариантов в зависимости от того, что уже используется в инфраструктуре:
+В сценарии с десятками/сотнями Win10 машин выбирайте один из вариантов в зависимости от того, что уже используется в инфраструктуре. Все варианты ниже регистрируют именно Scheduled Task (а не сервис) — это критично для работы скриншотов на Win10.
 
-1. **Active Directory + Group Policy (GPO).** Положите publish-каталог на сетевую шару `\\fileserver\worktime-agent\`, создайте Computer Startup Script (`Computer Configuration → Policies → Windows Settings → Scripts → Startup`) с PowerShell, который копирует файлы в `C:\WorkTimeTracker\Agent` и регистрирует службу через `sc.exe create`. Привяжите GPO к OU с целевыми компьютерами. Сценарий выполняется при загрузке от `LocalSystem` — нужных прав хватает.
+1. **Active Directory + Group Policy.** Самый портативный путь — создать Group Policy Preference типа Scheduled Task (`Computer Configuration → Preferences → Control Panel Settings → Scheduled Tasks → New → Scheduled Task (At least Windows 7)`). Триггер `At log on of any user`, действие — путь к `WorkTimeTracker.Agent.exe`. Сами файлы агента предварительно раскатать на машины через GPO Files preference из сетевой шары `\\fileserver\worktime-agent\`. Привязать GPO к OU с целевыми компьютерами.
 2. **PsExec (быстрое разворачивание без GPO).** Для разовой установки:
    ```powershell
    $hosts = Get-Content workstations.txt
    foreach ($h in $hosts) {
        robocopy publish\Agent \\$h\C$\WorkTimeTracker\Agent /MIR
-       psexec \\$h -h -s sc.exe create WorkTimeTrackerAgent binPath= "C:\WorkTimeTracker\Agent\WorkTimeTracker.Agent.exe" start= auto
-       psexec \\$h -h -s sc.exe start WorkTimeTrackerAgent
+       Copy-Item .\install-task.ps1 \\$h\C$\WorkTimeTracker\Agent\install-task.ps1 -Force
+       psexec \\$h -h -s powershell -ExecutionPolicy Bypass -File C:\WorkTimeTracker\Agent\install-task.ps1
    }
    ```
-3. **Microsoft Intune / SCCM.** Упакуйте `publish\Agent` в `.intunewin` через [Intune Win32 App Packaging Tool](https://learn.microsoft.com/intune/intune-service/apps/apps-win32-app-management) и опубликуйте как Win32-приложение с install-командой `install.ps1` (копирует файлы + `sc.exe create + start`) и detection rule по наличию службы `WorkTimeTrackerAgent`. Это рекомендуемый путь для Azure AD / Intune-управляемых парков.
-4. **Chocolatey for Business / WinGet.** Если в компании уже стоит пакетный менеджер — соберите `.nupkg` или WinGet-манифест и пушите его через корпоративный канал.
+   где `install-task.ps1` содержит блок `Register-ScheduledTask` из примера выше.
+3. **Microsoft Intune / SCCM.** Упакуйте `publish\Agent` + `install-task.ps1` в `.intunewin` через [Intune Win32 App Packaging Tool](https://learn.microsoft.com/intune/intune-service/apps/apps-win32-app-management). Install-команда — `powershell -ExecutionPolicy Bypass -File install-task.ps1`. Detection rule — наличие задачи через `schtasks /Query /TN WorkTimeTrackerAgent`. Рекомендуется для Azure AD / Intune-управляемых парков.
+4. **Chocolatey for Business / WinGet.** Если в компании уже стоит пакетный менеджер — соберите `.nupkg` или WinGet-манифест с тем же install-task.ps1.
 
-После установки служба должна попадать в админку (раздел «Серверы / станции») с автоматически сформированной записью на основе hostname. Привязка к сотруднику делается на стороне админки по `samAccountName` пользователя, выполнившего вход.
+После установки запись о машине автоматически появится в админке при первом heartbeat'е (раздел «Станции») или при первом загруженном скриншоте, на основе hostname. Привязка к сотруднику делается по `samAccountName` пользователя, выполнившего вход.
 
 ---
 
@@ -142,7 +158,7 @@ sc.exe start WorkTimeTrackerAgent
 worktime-tracker/
 ├── src/
 │   ├── WorkTimeTracker.Shared/   # DTO, модели, контракты
-│   ├── WorkTimeTracker.Agent/    # Worker Service для терминальных серверов
+│   ├── WorkTimeTracker.Agent/    # Worker Service для рабочих станций Windows 10
 │   ├── WorkTimeTracker.Server/   # Web API
 │   └── WorkTimeTracker.Admin/    # Blazor Server админка
 ├── tests/
@@ -158,14 +174,21 @@ worktime-tracker/
 ## Дорожная карта (MVP → v1)
 
 - [x] Скаффолдинг solution и CI
-- [ ] Agent: подписка на WTS-события, базовая отправка heartbeat
-- [ ] Agent: скриншот-сервис с триггерами по процессам
-- [ ] Server: EF Core миграции, контроллеры приёма событий
-- [ ] Admin: страница списка сотрудников + AD-аутентификация
+- [x] Agent: захват скриншотов всех мониторов и периодическая загрузка (этап 1)
+- [x] Server: приём multipart-скриншотов и сохранение в БД + ФС (этап 1)
+- [ ] Agent: подписка на WTS-события (P/Invoke на `wtsapi32.dll`), реальные сессии вместо синтетических
+- [ ] Agent: триггеры на скриншот по запуску процессов и смене foreground-окна
+- [ ] Server: EF Core миграции вместо `EnsureCreated()`, аутентификация агентов по device-токену
+- [ ] Admin: страница списка сотрудников + AD-аутентификация (Negotiate/Kerberos)
 - [ ] Admin: таймлайн RDP-сессий и галерея скриншотов
 - [ ] Отчёты по часам в Excel/CSV
-- [ ] Уведомление пользователю при входе в RDP (compliance)
+- [ ] Уведомление пользователю при входе ("Этот компьютер находится под наблюдением") — compliance
+- [ ] Инсталлятор (PowerShell + .intunewin / chocolatey)
 - [ ] Интеграционные тесты на тестовом домене
+
+## Что **не** входит в проект
+
+Сознательно **не реализуется** перехват ввода с клавиатуры (keylogger), запись звука с микрофона, чтение содержимого буфера обмена и любые формы скрытой работы (агент виден в Task Scheduler и Task Manager, иконка в трее, уведомление при логоне). Если тебе нужны эти функции — это отдельный класс ПО (StaffCop / Veriato / Teramind), их продают по корпоративной подписке с собственным юр-сопровождением. Этот проект сознательно ограничен учётом времени, периодическими скриншотами и журналом активности на уровне процессов и URL.
 
 ---
 

@@ -1,7 +1,10 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WorkTimeTracker.Agent.Services;
+using WorkTimeTracker.Shared.Dtos;
+using WorkTimeTracker.Shared.Models;
 
 namespace WorkTimeTracker.Agent;
 
@@ -32,7 +35,16 @@ public class AgentWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Agent starting. Server={Server}", _options.ServerUrl);
+        _logger.LogInformation(
+            "Agent starting. Host={Host}, Server={Server}, ScreenshotInterval={Interval}",
+            Environment.MachineName, _options.ServerUrl, _options.PeriodicScreenshotInterval);
+
+        if (Process.GetCurrentProcess().SessionId == 0)
+        {
+            _logger.LogWarning(
+                "Agent is running in Session 0 (Windows Service). Screenshots will be black. " +
+                "Deploy via Task Scheduler at user logon for Win10 — see README.");
+        }
 
         _rdpMonitor.Start();
         _processMonitor.Start();
@@ -57,16 +69,49 @@ public class AgentWorker : BackgroundService
                 _logger.LogWarning(ex, "Heartbeat failed");
             }
 
-            await Task.Delay(_options.HeartbeatInterval, ct);
+            try { await Task.Delay(_options.HeartbeatInterval, ct); }
+            catch (OperationCanceledException) { return; }
         }
     }
 
     private async Task RunPeriodicScreenshotLoop(CancellationToken ct)
     {
+        var sessionId = Process.GetCurrentProcess().SessionId;
+        var sam = Environment.UserName;
+
         while (!ct.IsCancellationRequested)
         {
-            await Task.Delay(_options.PeriodicScreenshotInterval, ct);
-            // TODO: capture screenshot for each active session and queue it for upload.
+            try { await Task.Delay(_options.PeriodicScreenshotInterval, ct); }
+            catch (OperationCanceledException) { return; }
+
+            try
+            {
+                var capture = await _screenshots.CaptureSessionAsync(
+                    wtsSessionId: sessionId,
+                    trigger: ScreenshotTrigger.Periodic,
+                    triggerProcess: null,
+                    ct);
+
+                if (capture is null)
+                {
+                    continue;
+                }
+
+                var metadata = new ScreenshotMetadataDto(
+                    WtsSessionId: sessionId,
+                    SamAccountName: sam,
+                    CapturedAtUtc: capture.CapturedAtUtc,
+                    Trigger: capture.Trigger,
+                    TriggerProcess: capture.TriggerProcess,
+                    Width: capture.Width,
+                    Height: capture.Height);
+
+                await _uploader.UploadScreenshotAsync(metadata, capture.PngBytes, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Periodic screenshot upload failed");
+            }
         }
     }
 
@@ -74,8 +119,11 @@ public class AgentWorker : BackgroundService
     {
         while (!ct.IsCancellationRequested)
         {
-            await Task.Delay(_options.EventBatchInterval, ct);
-            // TODO: drain queued events and POST batch to /api/agents/events.
+            try { await Task.Delay(_options.EventBatchInterval, ct); }
+            catch (OperationCanceledException) { return; }
+
+            // TODO (stage 3+): drain queued events from RdpMonitor / ProcessMonitor / Keylogger
+            // and POST batch to /api/agents/events.
         }
     }
 
