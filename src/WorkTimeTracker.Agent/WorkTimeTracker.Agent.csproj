@@ -2,13 +2,12 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>WorkTimeTracker.Agent</RootNamespace>
     <AssemblyName>WorkTimeTracker.Agent</AssemblyName>
     <UserSecretsId>worktime-tracker-agent</UserSecretsId>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
-    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
   </PropertyGroup>
 
   <ItemGroup>
