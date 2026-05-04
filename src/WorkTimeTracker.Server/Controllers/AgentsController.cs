@@ -10,6 +10,7 @@ namespace WorkTimeTracker.Server.Controllers;
 
 [ApiController]
 [Route("api/agents")]
+[ServiceFilter(typeof(AgentTokenAuthFilter))]
 public class AgentsController : ControllerBase
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -205,14 +206,20 @@ public class AgentsController : ControllerBase
         var host = await _db.ServerHosts.FirstOrDefaultAsync(h => h.Hostname == hostname, ct);
         if (host is null)
         {
+            // First contact — auth filter has already verified that
+            // ServerOptions.AllowAutoRegister is true and the presented
+            // token meets MinTokenLength. Persist the token so future
+            // requests from the same hostname can be validated against it.
+            var token = Request.Headers[AgentTokenAuthFilter.TokenHeader].ToString();
             host = new ServerHost
             {
                 Id = Guid.NewGuid(),
                 Hostname = hostname,
-                AgentToken = "auto-registered",
+                AgentToken = token,
                 CreatedAt = DateTime.UtcNow
             };
             _db.ServerHosts.Add(host);
+            _logger.LogInformation("Auto-registered new host {Hostname}", hostname);
         }
 
         host.LastHeartbeatAt = DateTime.UtcNow;

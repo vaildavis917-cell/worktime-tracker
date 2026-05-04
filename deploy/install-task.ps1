@@ -69,20 +69,34 @@ if ($LASTEXITCODE -ge 8) {
     throw "robocopy failed with exit code $LASTEXITCODE"
 }
 
-if ($ServerUrl -or $AgentToken) {
-    $cfgPath = Join-Path $InstallPath "appsettings.json"
-    if (-not (Test-Path $cfgPath)) {
-        throw "appsettings.json missing in destination after copy"
-    }
-    Write-Host "Patching appsettings.json (ServerUrl / AgentToken) ..."
-    $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-    if (-not $cfg.Agent) {
-        $cfg | Add-Member -NotePropertyName Agent -NotePropertyValue (New-Object psobject)
-    }
-    if ($ServerUrl)   { $cfg.Agent | Add-Member -NotePropertyName ServerUrl   -NotePropertyValue $ServerUrl   -Force }
-    if ($AgentToken)  { $cfg.Agent | Add-Member -NotePropertyName AgentToken  -NotePropertyValue $AgentToken  -Force }
-    ($cfg | ConvertTo-Json -Depth 10) | Set-Content $cfgPath -Encoding UTF8
+$cfgPath = Join-Path $InstallPath "appsettings.json"
+if (-not (Test-Path $cfgPath)) {
+    throw "appsettings.json missing in destination after copy"
 }
+$cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+if (-not $cfg.Agent) {
+    $cfg | Add-Member -NotePropertyName Agent -NotePropertyValue (New-Object psobject)
+}
+
+# AgentToken — generate if missing or still the placeholder. Server requires
+# at least 16 chars; we produce 32 hex chars (128 bits) which is plenty.
+if (-not $AgentToken -and ($cfg.Agent.AgentToken -in @($null, "", "REPLACE_ME_WITH_DEVICE_TOKEN"))) {
+    $bytes = New-Object byte[] 16
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $AgentToken = -join ($bytes | ForEach-Object { $_.ToString("x2") })
+    Write-Host "Generated random AgentToken: $AgentToken"
+    Write-Host "  -> Save this value if you plan to disable auto-register on the server."
+}
+
+if ($ServerUrl)  { $cfg.Agent | Add-Member -NotePropertyName ServerUrl  -NotePropertyValue $ServerUrl  -Force }
+if ($AgentToken) {
+    if ($AgentToken.Length -lt 16) {
+        throw "AgentToken must be at least 16 characters long (server enforces ServerOptions.MinTokenLength)."
+    }
+    $cfg.Agent | Add-Member -NotePropertyName AgentToken -NotePropertyValue $AgentToken -Force
+}
+($cfg | ConvertTo-Json -Depth 10) | Set-Content $cfgPath -Encoding UTF8
+Write-Host "appsettings.json updated."
 
 Write-Host "Registering Scheduled Task '$TaskName' ..."
 

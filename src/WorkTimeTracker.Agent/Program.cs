@@ -21,6 +21,7 @@ builder.Services.AddSingleton<IEventQueue, EventQueue>();
 if (OperatingSystem.IsWindows())
 {
     builder.Services.AddHostedService<TrayNotificationService>();
+    builder.Services.AddHostedService<IdleDetector>();
 }
 
 builder.Services.AddHttpClient<IEventUploader, EventUploader>((sp, http) =>

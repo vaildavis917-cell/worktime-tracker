@@ -18,6 +18,8 @@ public class AgentWorker : BackgroundService
     private readonly IProcessMonitor _processMonitor;
     private readonly IEventUploader _uploader;
     private readonly IEventQueue _events;
+    private readonly HashSet<string> _screenshotTriggerNames;
+    private DateTime _lastTriggerScreenshotAt = DateTime.MinValue;
 
     public AgentWorker(
         ILogger<AgentWorker> logger,
@@ -37,13 +39,18 @@ public class AgentWorker : BackgroundService
         _processMonitor = processMonitor;
         _uploader = uploader;
         _events = events;
+        _screenshotTriggerNames = _options.ScreenshotTriggerProcesses
+            .Select(NormaliseProcessName)
+            .Where(p => p.Length > 0)
+            .ToHashSet();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
-            "Agent starting. Host={Host}, Server={Server}, ScreenshotInterval={Interval}",
-            Environment.MachineName, _options.ServerUrl, _options.PeriodicScreenshotInterval);
+            "Agent starting. Host={Host}, Server={Server}, ScreenshotInterval={Interval}, IdleThreshold={Idle}",
+            Environment.MachineName, _options.ServerUrl,
+            _runtime.ScreenshotInterval, _options.IdleThreshold);
 
         if (Process.GetCurrentProcess().SessionId == 0)
         {
@@ -53,6 +60,9 @@ public class AgentWorker : BackgroundService
         }
 
         _rdpMonitor.SessionEvent += OnRdpSessionEvent;
+        _processMonitor.ProcessEvent += OnProcessEvent;
+        _processMonitor.ForegroundChanged += OnForegroundChanged;
+
         _rdpMonitor.Start();
         _processMonitor.Start();
 
@@ -79,6 +89,9 @@ public class AgentWorker : BackgroundService
         }
 
         _rdpMonitor.SessionEvent -= OnRdpSessionEvent;
+        _processMonitor.ProcessEvent -= OnProcessEvent;
+        _processMonitor.ForegroundChanged -= OnForegroundChanged;
+
         _rdpMonitor.Stop();
         _processMonitor.Stop();
         await base.StopAsync(cancellationToken);
@@ -96,6 +109,88 @@ public class AgentWorker : BackgroundService
             WindowTitle: null,
             Url: null,
             PayloadJson: evt.ClientName is null ? null : $"{{\"client\":\"{evt.ClientName}\"}}"));
+    }
+
+    private void OnProcessEvent(object? sender, ProcessEvent evt)
+    {
+        _events.Enqueue(new ActivityEventDto(
+            ClientEventId: Guid.NewGuid(),
+            WtsSessionId: evt.WtsSessionId,
+            SamAccountName: Environment.UserName,
+            Type: evt.IsStart ? ActivityEventType.ProcessStart : ActivityEventType.ProcessExit,
+            TimestampUtc: evt.TimestampUtc,
+            ProcessName: evt.ProcessName,
+            WindowTitle: null,
+            Url: null,
+            PayloadJson: $"{{\"pid\":{evt.ProcessId}}}"));
+
+        if (evt.IsStart && IsTriggerProcess(evt.ProcessName))
+        {
+            // Screenshot triggers fire at most once every 5s to avoid storms when
+            // a parent process spawns many children with the same name.
+            var now = DateTime.UtcNow;
+            if ((now - _lastTriggerScreenshotAt).TotalSeconds < 5) return;
+            _lastTriggerScreenshotAt = now;
+
+            _ = Task.Run(() => CaptureTriggeredAsync(evt.ProcessName, ScreenshotTrigger.ProcessLaunched));
+        }
+    }
+
+    private void OnForegroundChanged(object? sender, ForegroundChangedEvent evt)
+    {
+        _events.Enqueue(new ActivityEventDto(
+            ClientEventId: Guid.NewGuid(),
+            WtsSessionId: evt.WtsSessionId,
+            SamAccountName: Environment.UserName,
+            Type: ActivityEventType.ForegroundWindowChanged,
+            TimestampUtc: evt.TimestampUtc,
+            ProcessName: evt.ProcessName,
+            WindowTitle: evt.WindowTitle,
+            Url: null,
+            PayloadJson: null));
+    }
+
+    private bool IsTriggerProcess(string processName) =>
+        _screenshotTriggerNames.Contains(NormaliseProcessName(processName));
+
+    private static string NormaliseProcessName(string raw)
+    {
+        var clean = raw.Trim();
+        if (clean.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            clean = clean[..^4];
+        }
+        return clean.ToLowerInvariant();
+    }
+
+    private async Task CaptureTriggeredAsync(string triggerProcess, ScreenshotTrigger trigger)
+    {
+        try
+        {
+            var sessionId = Process.GetCurrentProcess().SessionId;
+            var capture = await _screenshots.CaptureSessionAsync(
+                wtsSessionId: sessionId,
+                trigger: trigger,
+                triggerProcess: triggerProcess,
+                CancellationToken.None);
+
+            if (capture is null) return;
+
+            var metadata = new ScreenshotMetadataDto(
+                WtsSessionId: sessionId,
+                SamAccountName: Environment.UserName,
+                CapturedAtUtc: capture.CapturedAtUtc,
+                Trigger: capture.Trigger,
+                TriggerProcess: capture.TriggerProcess,
+                Width: capture.Width,
+                Height: capture.Height);
+
+            await _uploader.UploadScreenshotAsync(metadata, capture.PngBytes, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Triggered screenshot for {Process} failed", triggerProcess);
+        }
     }
 
     private void EnqueueAgentEvent(ActivityEventType type)

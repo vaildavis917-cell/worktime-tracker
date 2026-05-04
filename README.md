@@ -37,10 +37,11 @@
 - **Скриншоты:** все мониторы (объединённый bitmap по `SystemInformation.VirtualScreen`), каждые 30 секунд по умолчанию.
 - **Live-view:** в админке кнопка "Watch" по любой станции — сервер ставит флаг `LiveViewUntil = +10 минут`, агент читает желаемый интервал из ответа на heartbeat и переключается на 2 секунды. Видимый индикатор: иконка в трее остаётся, плюс badge "live" в админке. Без ввода с админ-конца — только просмотр.
 - **RDP shadow:** в админке кнопка "RDP shadow" формирует команду `mstsc /shadow:<sessionId> /v:<hostname> /control` для админ-машины — реальный session id берётся из последнего heartbeat'а. Подключение использует встроенный механизм Windows Remote Desktop Services Session Shadowing, требует политики "Set rules for remote control of Remote Desktop Services user sessions" в GPO. **Никакого собственного канала remote control в агенте нет** (см. "Что не входит в проект").
-- **Foreground-окно:** через `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`. По смене активного окна — пишется заголовок и имя процесса. (TODO)
-- **Триггеры на скриншот по событию:** запуск Telegram (`Telegram.exe`), любого браузера, переключение на нерабочее ПО (список конфигурируется). (TODO)
-- **Браузерные URL:** опционально, через UI Automation у `chrome.exe` / `msedge.exe` / `firefox.exe` — без установки расширений. (TODO)
-- **Простой:** определяется через `GetLastInputInfo` (нет ввода >N минут — таймер ставится на паузу). (TODO)
+- **Foreground-окно:** через `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` на dedicated STA-потоке. По смене активного окна пишется заголовок + имя процесса в `ActivityEvent` с типом `ForegroundWindowChanged`. Дубли в пределах 500ms склеиваются.
+- **Процессы:** через WMI `Win32_ProcessStartTrace` / `Win32_ProcessStopTrace` (`System.Management.ManagementEventWatcher`). Каждый запуск/выход → `ProcessStart` / `ProcessExit` event с PID и process name.
+- **Триггеры на скриншот по событию:** при `ProcessStart` для имени из `Agent.ScreenshotTriggerProcesses` (по умолчанию: Telegram, WhatsApp, Discord, chrome, msedge, firefox, opera, brave) агент мгновенно делает внеочередной скриншот с `Trigger=ProcessLaunched`. Anti-storm: один такой скриншот не чаще раз в 5 секунд.
+- **Простой:** через `GetLastInputInfo` (мышь/клавиатура/перо). `IdleDetector` опрашивает раз в 5 сек, при превышении `IdleThreshold` (по умолчанию 3 минуты) шлёт `IdleStart`, при возврате активности — `IdleEnd`. Используется в отчёте по часам для вычитания idle-времени (TODO в логике отчёта).
+- **Браузерные URL:** опционально, через UI Automation у `chrome.exe` / `msedge.exe` / `firefox.exe`. Не реализовано — UI Automation в браузерах хрупко по версиям и требует WPF runtime; в скоупе будущей итерации.
 
 ---
 
@@ -185,9 +186,12 @@ worktime-tracker/
 - [x] Tray-уведомление "Этот компьютер находится под наблюдением" — compliance (этап 5)
 - [x] PowerShell инсталлятор Scheduled Task + Intune (этап 5)
 - [x] Live-view (ускоренные скриншоты до 2 сек по запросу из админки) + интеграция с RDP shadow (этап 6)
-- [ ] Agent: триггеры на скриншот по запуску процессов и смене foreground-окна
-- [ ] Server: EF Core миграции вместо `EnsureCreated()`, аутентификация агентов по device-токену
-- [ ] Отчёты по часам в Excel/CSV
+- [x] Agent: foreground-окна через `SetWinEventHook`, процессы через WMI `Win32_ProcessStartTrace`, триггеры на скриншот по списку (этап 7)
+- [x] Agent: idle-детект через `GetLastInputInfo` (этап 7)
+- [x] Server: device-token аутентификация через `AgentTokenAuthFilter` с auto-register режимом (этап 7)
+- [x] Admin: отчёты по часам в CSV с фильтром по сотруднику и периоду (этап 7)
+- [ ] Browser URL extraction через UI Automation — фрагильно по версиям браузеров, требует WPF runtime; вынесено в отдельный future task.
+- [ ] EF Core миграции вместо `EnsureCreated()` — нужен `dotnet ef migrations add InitialCreate` на dev-машине с установленным .NET SDK; сейчас работает через `EnsureCreated()` для упрощения первого деплоя.
 - [ ] Интеграционные тесты на тестовом домене
 
 ## Что **не** входит в проект

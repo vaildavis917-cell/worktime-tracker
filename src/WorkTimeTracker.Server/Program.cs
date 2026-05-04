@@ -5,9 +5,14 @@ using WorkTimeTracker.Server;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("Storage"));
+builder.Services.Configure<ServerOptions>(builder.Configuration.GetSection("Server"));
 
 builder.Services.AddDbContext<AppDbContext>(opts =>
     opts.UseNpgsql(builder.Configuration.GetConnectionString("Postgres")));
+builder.Services.AddDbContextFactory<AppDbContext>(opts =>
+    opts.UseNpgsql(builder.Configuration.GetConnectionString("Postgres")));
+
+builder.Services.AddScoped<AgentTokenAuthFilter>();
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();

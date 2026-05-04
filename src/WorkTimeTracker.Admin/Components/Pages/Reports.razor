@@ -1,0 +1,148 @@
+@page "/reports"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>Отчёты</PageTitle>
+
+<h1>Отчёты по часам</h1>
+
+<p class="muted">Сумма длительностей RDP/console-сессий, разнесённая по дням. Активные (незакрытые) сессии включаются по состоянию на текущий момент.</p>
+
+<div class="filter-bar">
+    <label>С:
+        <input type="date" @bind="from" />
+    </label>
+    <label>По:
+        <input type="date" @bind="to" />
+    </label>
+    <label>Сотрудник:
+        <select @bind="employee">
+            <option value="">— все —</option>
+            @foreach (var e in employees)
+            {
+                <option value="@e">@e</option>
+            }
+        </select>
+    </label>
+    <button @onclick="Preview">Показать</button>
+    <a class="btn-link" href="@CsvUrl" target="_blank">Скачать CSV</a>
+</div>
+
+@if (rows is null)
+{
+    <p class="muted">Выберите период и нажмите «Показать».</p>
+}
+else if (rows.Count == 0)
+{
+    <p>Сессий за выбранный период не найдено.</p>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Сотрудник</th>
+                <th>Имя</th>
+                <th>Дата</th>
+                <th>Часы</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in rows)
+            {
+                <tr>
+                    <td>@r.Sam</td>
+                    <td>@r.Name</td>
+                    <td>@r.Day.ToString("yyyy-MM-dd")</td>
+                    <td>@r.Hours.ToString("0.00")</td>
+                </tr>
+            }
+        </tbody>
+        <tfoot>
+            <tr>
+                <td colspan="3"><strong>Итого</strong></td>
+                <td><strong>@rows.Sum(r => r.Hours).ToString("0.00")</strong></td>
+            </tr>
+        </tfoot>
+    </table>
+}
+
+@code {
+    private record Row(string Sam, string Name, DateTime Day, double Hours);
+
+    private DateTime from = DateTime.UtcNow.Date.AddDays(-7);
+    private DateTime to = DateTime.UtcNow.Date.AddDays(1);
+    private string employee = string.Empty;
+    private List<string> employees = new();
+    private List<Row>? rows;
+
+    private string CsvUrl =>
+        $"/admin-api/reports/hours.csv?from={from:yyyy-MM-dd}&to={to:yyyy-MM-dd}"
+        + (string.IsNullOrEmpty(employee) ? string.Empty : $"&employee={Uri.EscapeDataString(employee)}");
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        employees = await db.Employees
+            .OrderBy(e => e.SamAccountName)
+            .Select(e => e.SamAccountName)
+            .ToListAsync();
+    }
+
+    private async Task Preview()
+    {
+        rows = null;
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var fromUtc = DateTime.SpecifyKind(from, DateTimeKind.Utc);
+        var toUtc = DateTime.SpecifyKind(to, DateTimeKind.Utc);
+
+        var q = db.RdpSessions
+            .AsNoTracking()
+            .Where(s => s.StartedAt < toUtc && (s.EndedAt == null || s.EndedAt >= fromUtc));
+
+        if (!string.IsNullOrEmpty(employee))
+        {
+            q = q.Where(s => s.Employee!.SamAccountName == employee);
+        }
+
+        var sessions = await q
+            .Select(s => new
+            {
+                s.StartedAt,
+                s.EndedAt,
+                Sam = s.Employee!.SamAccountName,
+                Name = s.Employee!.DisplayName
+            })
+            .ToListAsync();
+
+        var now = DateTime.UtcNow;
+        var agg = new Dictionary<(string Sam, string Name, DateTime Day), TimeSpan>();
+
+        foreach (var s in sessions)
+        {
+            var start = s.StartedAt > fromUtc ? s.StartedAt : fromUtc;
+            var end = (s.EndedAt ?? now) < toUtc ? (s.EndedAt ?? now) : toUtc;
+
+            for (var day = start.Date; day < end; day = day.AddDays(1))
+            {
+                var dayStart = day;
+                var dayEnd = day.AddDays(1);
+                var sliceStart = start > dayStart ? start : dayStart;
+                var sliceEnd = end < dayEnd ? end : dayEnd;
+                var slice = sliceEnd - sliceStart;
+                if (slice <= TimeSpan.Zero) continue;
+
+                var key = (s.Sam, s.Name, day);
+                agg[key] = agg.TryGetValue(key, out var current) ? current + slice : slice;
+            }
+        }
+
+        rows = agg
+            .OrderBy(p => p.Key.Sam)
+            .ThenBy(p => p.Key.Day)
+            .Select(p => new Row(p.Key.Sam, p.Key.Name, p.Key.Day, p.Value.TotalHours))
+            .ToList();
+    }
+}
